@@ -53,6 +53,12 @@ if data is None or data.empty:
     st.error(f"No data found for '{ticker}'. Double-check the symbol (US stocks only) and try again.")
     st.stop()
 
+# Drop rows with no close (e.g. the current, unfinished trading day)
+data = data.dropna(subset=["Close"])
+if data.empty:
+    st.error(f"No usable price data for '{ticker}' yet. Try again shortly.")
+    st.stop()
+
 # Summary metrics
 first_close = float(data["Close"].iloc[0])
 last_close = float(data["Close"].iloc[-1])
