@@ -115,15 +115,17 @@ m2.metric(f"Change ({cfg['label']})", f"${change:,.2f}", f"{pct:+.2f}%")
 m3.metric("RSI (14)", f"{last_rsi:.1f}", rsi_state)
 m4.metric("Trading days shown", f"{len(view):,}")
 
-# Which moving averages to show
-all_labels = [label for _, (_w, label) in MAS.items()]
-chosen = st.multiselect("Moving averages to overlay", all_labels, default=all_labels)
+# ---- Price chart controls ---------------------------------------------------
+ctrl1, ctrl2 = st.columns([1, 3])
+with ctrl1:
+    chart_type = st.radio("Chart type", ["Candlestick", "Line"], index=0, horizontal=True)
+with ctrl2:
+    all_labels = [label for _, (_w, label) in MAS.items()]
+    chosen = st.multiselect("Moving averages to overlay", all_labels, default=all_labels)
 
-# ---- Price chart with moving averages ---------------------------------------
-st.subheader(f"{ticker} — closing price")
+st.subheader(f"{ticker} — price")
 
 date_col = view.reset_index().columns[0]  # 'Date' or 'Datetime'
-series_order = ["Close"] + [label for _, (_w, label) in MAS.items() if label in chosen]
 color_map = {
     "Close": "#ff2d55",
     "5-day": "#f59e0b",
@@ -132,36 +134,73 @@ color_map = {
     "Quarterly (63d)": "#10b981",
 }
 
-# Build a tidy (long) frame with only the selected series.
-keep = {"Close": "Close"}
-for _col, (_w, label) in MAS.items():
-    if label in chosen:
-        keep[_col] = label
-price_df = view.reset_index()[[date_col] + list(keep.keys())].rename(columns=keep)
-long_df = price_df.melt(id_vars=date_col, var_name="Series", value_name="Price").dropna(subset=["Price"])
+# Moving-average overlay (used by both chart types) ---------------------------
+ma_keep = {col: label for col, (_w, label) in MAS.items() if label in chosen}
+ma_order = [label for _col, (_w, label) in MAS.items() if label in chosen]
+ma_layer = None
+if ma_keep:
+    ma_df = view.reset_index()[[date_col] + list(ma_keep.keys())].rename(columns=ma_keep)
+    ma_long = ma_df.melt(id_vars=date_col, var_name="Series", value_name="Price").dropna(subset=["Price"])
+    ma_layer = (
+        alt.Chart(ma_long)
+        .mark_line(size=1.4)
+        .encode(
+            x=alt.X(f"{date_col}:T", title=None),
+            y=alt.Y("Price:Q", title="Price ($)", scale=alt.Scale(zero=False)),
+            color=alt.Color(
+                "Series:N",
+                scale=alt.Scale(domain=ma_order, range=[color_map[s] for s in ma_order]),
+                sort=ma_order,
+                legend=alt.Legend(title="Moving avg", orient="top"),
+            ),
+            tooltip=[alt.Tooltip(f"{date_col}:T", title="Date"), "Series:N", alt.Tooltip("Price:Q", format="$.2f")],
+        )
+    )
 
-price_chart = (
-    alt.Chart(long_df)
-    .mark_line()
-    .encode(
+# Build the price layer(s) ----------------------------------------------------
+if chart_type == "Line":
+    close_layer = (
+        alt.Chart(view.reset_index())
+        .mark_line(color=color_map["Close"], size=2.4)
+        .encode(
+            x=alt.X(f"{date_col}:T", title=None),
+            y=alt.Y("Close:Q", title="Price ($)", scale=alt.Scale(zero=False)),
+            tooltip=[alt.Tooltip(f"{date_col}:T", title="Date"), alt.Tooltip("Close:Q", title="Close", format="$.2f")],
+        )
+    )
+    layers = [close_layer] + ([ma_layer] if ma_layer is not None else [])
+else:  # Candlestick
+    cdf = view.reset_index()[[date_col, "Open", "High", "Low", "Close"]].copy()
+    cdf["Up"] = cdf["Close"] >= cdf["Open"]
+    base = alt.Chart(cdf).encode(
         x=alt.X(f"{date_col}:T", title=None),
-        y=alt.Y("Price:Q", title="Price ($)", scale=alt.Scale(zero=False)),
         color=alt.Color(
-            "Series:N",
-            scale=alt.Scale(domain=series_order, range=[color_map[s] for s in series_order]),
-            sort=series_order,
-            legend=alt.Legend(title=None, orient="top"),
+            "Up:N",
+            scale=alt.Scale(domain=[True, False], range=["#26a69a", "#ef5350"]),
+            legend=None,
         ),
-        size=alt.condition(alt.datum.Series == "Close", alt.value(2.4), alt.value(1.3)),
+    )
+    wick = base.mark_rule().encode(
+        y=alt.Y("Low:Q", title="Price ($)", scale=alt.Scale(zero=False)),
+        y2="High:Q",
+    )
+    body = base.mark_bar().encode(
+        y="Open:Q",
+        y2="Close:Q",
         tooltip=[
             alt.Tooltip(f"{date_col}:T", title="Date"),
-            alt.Tooltip("Series:N", title="Series"),
-            alt.Tooltip("Price:Q", title="Price", format="$.2f"),
+            alt.Tooltip("Open:Q", format="$.2f"),
+            alt.Tooltip("High:Q", format="$.2f"),
+            alt.Tooltip("Low:Q", format="$.2f"),
+            alt.Tooltip("Close:Q", format="$.2f"),
         ],
     )
-    .properties(height=420)
-)
+    layers = [wick, body] + ([ma_layer] if ma_layer is not None else [])
+
+price_chart = alt.layer(*layers).resolve_scale(y="shared", color="independent").properties(height=440)
 st.altair_chart(price_chart, use_container_width=True)
+if chart_type == "Candlestick":
+    st.caption("Green = up day (close ≥ open), red = down day. Candlesticks read best over shorter ranges.")
 
 # ---- RSI chart (0–100 scale with 70 / 30 guide lines) -----------------------
 st.subheader("Relative Strength Index (RSI 14)")
