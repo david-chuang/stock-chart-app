@@ -125,7 +125,7 @@ st.subheader(f"{ticker} — closing price")
 date_col = view.reset_index().columns[0]  # 'Date' or 'Datetime'
 series_order = ["Close"] + [label for _, (_w, label) in MAS.items() if label in chosen]
 color_map = {
-    "Close": "#0f172a",
+    "Close": "#ff2d55",
     "5-day": "#f59e0b",
     "10-day": "#3b82f6",
     "Monthly (21d)": "#8b5cf6",
