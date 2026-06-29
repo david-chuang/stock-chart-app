@@ -1,6 +1,7 @@
 """
 Stock Price Chart — a simple Streamlit app.
-Enter a US stock ticker and see its closing price with moving averages, plus a 14-day RSI.
+Enter a US stock ticker and see its price (line or candlestick) with moving
+averages, plus a 14-day RSI. Charts use a trading-day axis (no weekend gaps).
 """
 
 import altair as alt
@@ -97,9 +98,25 @@ for col, (window, _label) in MAS.items():
 
 if cfg["days"] is not None:
     cutoff = data.index.max() - pd.Timedelta(days=cfg["days"])
-    view = data[data.index >= cutoff]
+    view = data[data.index >= cutoff].copy()
 else:
-    view = data
+    view = data.copy()
+
+# Trading-day axis: one slot per trading day so weekends/holidays add no gaps.
+view["D"] = view.index.strftime("%Y-%m-%d")
+dates_sorted = list(view["D"])
+step = max(1, len(dates_sorted) // 8)
+tick_vals = dates_sorted[::step]
+
+
+def x_axis(title=None):
+    return alt.X(
+        "D:O",
+        sort=dates_sorted,
+        title=title,
+        axis=alt.Axis(values=tick_vals, labelAngle=-45, labelOverlap=True),
+    )
+
 
 # Summary metrics
 first_close = float(view["Close"].iloc[0])
@@ -125,7 +142,6 @@ with ctrl2:
 
 st.subheader(f"{ticker} — price")
 
-date_col = view.reset_index().columns[0]  # 'Date' or 'Datetime'
 color_map = {
     "Close": "#ff2d55",
     "5-day": "#f59e0b",
@@ -139,13 +155,13 @@ ma_keep = {col: label for col, (_w, label) in MAS.items() if label in chosen}
 ma_order = [label for _col, (_w, label) in MAS.items() if label in chosen]
 ma_layer = None
 if ma_keep:
-    ma_df = view.reset_index()[[date_col] + list(ma_keep.keys())].rename(columns=ma_keep)
-    ma_long = ma_df.melt(id_vars=date_col, var_name="Series", value_name="Price").dropna(subset=["Price"])
+    ma_df = view[["D"] + list(ma_keep.keys())].rename(columns=ma_keep)
+    ma_long = ma_df.melt(id_vars="D", var_name="Series", value_name="Price").dropna(subset=["Price"])
     ma_layer = (
         alt.Chart(ma_long)
         .mark_line(size=1.4)
         .encode(
-            x=alt.X(f"{date_col}:T", title=None),
+            x=x_axis(),
             y=alt.Y("Price:Q", title="Price ($)", scale=alt.Scale(zero=False)),
             color=alt.Color(
                 "Series:N",
@@ -153,27 +169,27 @@ if ma_keep:
                 sort=ma_order,
                 legend=alt.Legend(title="Moving avg", orient="top"),
             ),
-            tooltip=[alt.Tooltip(f"{date_col}:T", title="Date"), "Series:N", alt.Tooltip("Price:Q", format="$.2f")],
+            tooltip=[alt.Tooltip("D:O", title="Date"), "Series:N", alt.Tooltip("Price:Q", format="$.2f")],
         )
     )
 
 # Build the price layer(s) ----------------------------------------------------
 if chart_type == "Line":
     close_layer = (
-        alt.Chart(view.reset_index())
+        alt.Chart(view)
         .mark_line(color=color_map["Close"], size=2.4)
         .encode(
-            x=alt.X(f"{date_col}:T", title=None),
+            x=x_axis(),
             y=alt.Y("Close:Q", title="Price ($)", scale=alt.Scale(zero=False)),
-            tooltip=[alt.Tooltip(f"{date_col}:T", title="Date"), alt.Tooltip("Close:Q", title="Close", format="$.2f")],
+            tooltip=[alt.Tooltip("D:O", title="Date"), alt.Tooltip("Close:Q", title="Close", format="$.2f")],
         )
     )
     layers = [close_layer] + ([ma_layer] if ma_layer is not None else [])
 else:  # Candlestick
-    cdf = view.reset_index()[[date_col, "Open", "High", "Low", "Close"]].copy()
+    cdf = view[["D", "Open", "High", "Low", "Close"]].copy()
     cdf["Up"] = cdf["Close"] >= cdf["Open"]
     base = alt.Chart(cdf).encode(
-        x=alt.X(f"{date_col}:T", title=None),
+        x=x_axis(),
         color=alt.Color(
             "Up:N",
             scale=alt.Scale(domain=[True, False], range=["#26a69a", "#ef5350"]),
@@ -188,7 +204,7 @@ else:  # Candlestick
         y="Open:Q",
         y2="Close:Q",
         tooltip=[
-            alt.Tooltip(f"{date_col}:T", title="Date"),
+            alt.Tooltip("D:O", title="Date"),
             alt.Tooltip("Open:Q", format="$.2f"),
             alt.Tooltip("High:Q", format="$.2f"),
             alt.Tooltip("Low:Q", format="$.2f"),
@@ -204,19 +220,18 @@ if chart_type == "Candlestick":
 
 # ---- RSI chart (0–100 scale with 70 / 30 guide lines) -----------------------
 st.subheader("Relative Strength Index (RSI 14)")
-rsi_df = view.reset_index()
 rsi_line = (
-    alt.Chart(rsi_df)
+    alt.Chart(view)
     .mark_line(color="#7c3aed")
     .encode(
-        x=alt.X(f"{date_col}:T", title=None),
+        x=x_axis(),
         y=alt.Y("RSI:Q", scale=alt.Scale(domain=[0, 100]), title="RSI"),
-        tooltip=[alt.Tooltip(f"{date_col}:T", title="Date"), alt.Tooltip("RSI:Q", format=".1f")],
+        tooltip=[alt.Tooltip("D:O", title="Date"), alt.Tooltip("RSI:Q", format=".1f")],
     )
 )
 overbought = alt.Chart(pd.DataFrame({"y": [70]})).mark_rule(color="#ef4444", strokeDash=[4, 4]).encode(y="y")
 oversold = alt.Chart(pd.DataFrame({"y": [30]})).mark_rule(color="#22c55e", strokeDash=[4, 4]).encode(y="y")
-st.altair_chart((rsi_line + overbought + oversold).properties(height=220), use_container_width=True)
+st.altair_chart((rsi_line + overbought + oversold).resolve_scale(y="shared").properties(height=220), use_container_width=True)
 st.caption("RSI above 70 = potentially overbought; below 30 = potentially oversold.")
 
 # ---- Optional raw data ------------------------------------------------------
